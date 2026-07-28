@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=6, user-scalable=yes">
+<meta name="robots" content="noindex">
+<title>DragonSword: Awakening — Interactive Map</title>
+<style>
+  :root { --panel:#141a24; --ink:#e8eef6; --muted:#8fa3bd; --line:#26303f; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; overflow:hidden; background:#2fb6d6;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; color:var(--ink); }
+  #map { position:fixed; inset:0; width:100%; height:100%; touch-action:none; display:block; cursor:grab; }
+  #map.grabbing { cursor:grabbing; }
+  #panel { position:fixed; top:10px; left:10px; z-index:10; background:rgba(20,26,36,.92);
+    border:1px solid var(--line); border-radius:12px; padding:12px 14px; width:238px;
+    backdrop-filter:blur(8px); box-shadow:0 8px 30px rgba(0,0,0,.35); font-size:13px; }
+  #panel h1 { font-size:14px; margin:0 0 2px; letter-spacing:.2px; }
+  #panel .sub { color:var(--muted); font-size:11px; margin-bottom:10px; }
+  .row { display:flex; align-items:center; gap:8px; padding:4px 0; cursor:pointer; user-select:none; }
+  .row input { accent-color:#4f8ef7; width:15px; height:15px; }
+  .dot { width:11px; height:11px; border-radius:50%; flex:0 0 auto; }
+  .row .lbl { flex:1; }
+  .row .ct { color:var(--muted); font-variant-numeric:tabular-nums; font-size:11px; }
+  .divider { height:1px; background:var(--line); margin:9px 0; }
+  #stats { font-size:11px; color:var(--muted); line-height:1.7; }
+  #stats b { color:var(--ink); }
+  .toggle-collapsed #body { display:none; }
+  #collapse { position:absolute; top:10px; right:12px; color:var(--muted); cursor:pointer;
+    font-size:16px; line-height:1; border:none; background:none; }
+  #hint { position:fixed; bottom:8px; left:50%; transform:translateX(-50%); z-index:10;
+    background:rgba(20,26,36,.82); border:1px solid var(--line); border-radius:20px;
+    padding:5px 14px; font-size:11px; color:var(--muted); }
+  #tip { position:fixed; z-index:11; background:rgba(20,26,36,.96); border:1px solid var(--line);
+    border-radius:8px; padding:6px 9px; font-size:12px; pointer-events:none; display:none; max-width:220px; }
+  #tip .done { color:#48d18a; } #tip .todo { color:#ffb454; }
+  @media (max-width:520px){ #panel{ width:200px; font-size:12px; } }
+</style>
+</head>
+<body>
+<canvas id="map"></canvas>
+<div id="panel">
+  <button id="collapse" title="collapse">–</button>
+  <h1>DragonSword Map</h1>
+  <div class="sub" id="freshness">loading…</div>
+  <div id="body">
+    <div id="cats"></div>
+    <div class="divider"></div>
+    <label class="row"><input type="checkbox" id="hideDone"><span class="lbl">Hide completed</span></label>
+    <div class="divider"></div>
+    <div id="stats"></div>
+  </div>
+</div>
+<div id="hint">drag to pan · scroll / pinch to zoom · tap a marker</div>
+<div id="tip"></div>
+<script>
+const CAT_COLORS = {
+  TreasureBox:'#ff4d4d', Gather:'#57e389', Mining:'#ffc300', Puzzle:'#c86bff',
+  FieldStatuePickup:'#00c8ff', MiniGameFly:'#ff8ac4', MiniGameMole:'#ff8ac4', MiniGameWave:'#ff8ac4'
+};
+const CAT_LABELS = {
+  TreasureBox:'Treasure chests', Gather:'Gathering', Mining:'Mining', Puzzle:'Puzzles',
+  FieldStatuePickup:'Statue pickups', MiniGameFly:'Minigame · Fly', MiniGameMole:'Minigame · Mole', MiniGameWave:'Minigame · Wave'
+};
+const canvas = document.getElementById('map'), ctx = canvas.getContext('2d');
+const tip = document.getElementById('tip');
+let img = new Image(), markers = [], progress = {opened:new Set(), mg:new Set()};
+let view = {x:0, y:0, scale:1}, enabled = {}, hideDone = false, dpr = Math.min(devicePixelRatio||1, 2.5);
+
+function resize(){ canvas.width = innerWidth*dpr; canvas.height = innerHeight*dpr; canvas.style.width=innerWidth+'px'; canvas.style.height=innerHeight+'px'; draw(); }
+function isDone(m){
+  if(m.c==='TreasureBox') return m.cid!=null && progress.opened.has(m.cid);
+  if(m.c.startsWith('MiniGame')) return m.cid!=null && progress.mg.has(m.cid);
+  return false;
+}
+function fitView(){
+  const s = Math.min(innerWidth/img.width, innerHeight/img.height)*0.98*dpr;
+  view.scale = s; view.x = (canvas.width - img.width*s)/2; view.y = (canvas.height - img.height*s)/2;
+}
+function draw(){
+  if(!img.width) return;
+  ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle='#2fb6d6'; ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.setTransform(view.scale,0,0,view.scale,view.x,view.y);
+  ctx.imageSmoothingQuality='high';
+  ctx.drawImage(img,0,0);
+  const r = Math.max(2.2, 3.4/Math.sqrt(view.scale/dpr))/1;
+  for(const m of markers){
+    if(!enabled[m.c]) continue;
+    const done = isDone(m);
+    if(hideDone && done) continue;
+    const px = m.x/100*img.width, py = m.y/100*img.height;
+    ctx.beginPath(); ctx.arc(px,py,r,0,7);
+    if(done){ ctx.globalAlpha=0.35; ctx.fillStyle=CAT_COLORS[m.c]; ctx.fill(); ctx.globalAlpha=1;
+      ctx.lineWidth=r*0.4; ctx.strokeStyle='#0c1017'; ctx.stroke(); }
+    else { ctx.fillStyle=CAT_COLORS[m.c]; ctx.fill(); ctx.lineWidth=r*0.35; ctx.strokeStyle='rgba(0,0,0,.55)'; ctx.stroke(); }
+  }
+}
+// ---- interaction ----
+let drag=null;
+canvas.addEventListener('pointerdown', e=>{ drag={x:e.clientX,y:e.clientY,vx:view.x,vy:view.y,moved:0}; canvas.classList.add('grabbing'); canvas.setPointerCapture(e.pointerId); });
+canvas.addEventListener('pointermove', e=>{ if(!drag) return; const dx=(e.clientX-drag.x)*dpr, dy=(e.clientY-drag.y)*dpr; drag.moved+=Math.abs(dx)+Math.abs(dy); view.x=drag.vx+dx; view.y=drag.vy+dy; draw(); });
+canvas.addEventListener('pointerup', e=>{ if(drag && drag.moved<6*dpr) identify(e.clientX,e.clientY); drag=null; canvas.classList.remove('grabbing'); });
+canvas.addEventListener('wheel', e=>{ e.preventDefault(); zoomAt(e.clientX*dpr, e.clientY*dpr, Math.exp(-e.deltaY*0.0015)); }, {passive:false});
+let pinch=null;
+canvas.addEventListener('touchstart', e=>{ if(e.touches.length===2){ pinch=dist(e); } }, {passive:false});
+canvas.addEventListener('touchmove', e=>{ if(e.touches.length===2 && pinch){ e.preventDefault(); const d=dist(e); const mx=(e.touches[0].clientX+e.touches[1].clientX)/2*dpr, my=(e.touches[0].clientY+e.touches[1].clientY)/2*dpr; zoomAt(mx,my,d/pinch); pinch=d; } }, {passive:false});
+canvas.addEventListener('touchend', e=>{ if(e.touches.length<2) pinch=null; });
+function dist(e){ const a=e.touches[0], b=e.touches[1]; return Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY); }
+function zoomAt(cx,cy,f){ const ns=Math.max(view.scale*0.2, Math.min(view.scale*f, 60*dpr)); const k=ns/view.scale; view.x=cx-(cx-view.x)*k; view.y=cy-(cy-view.y)*k; view.scale=ns; draw(); }
+function identify(sx,sy){
+  const wx=(sx*dpr-view.x)/view.scale, wy=(sy*dpr-view.y)/view.scale;
+  let best=null, bd=1e9;
+  for(const m of markers){ if(!enabled[m.c]) continue; if(hideDone&&isDone(m)) continue;
+    const px=m.x/100*img.width, py=m.y/100*img.height; const d=Math.hypot(px-wx,py-wy);
+    if(d<bd){bd=d;best=m;} }
+  const thresh = 14/view.scale*dpr;
+  if(best && bd<thresh){
+    const done=isDone(best);
+    let s = `<b>${CAT_LABELS[best.c]||best.c}</b>`;
+    if(best.cid!=null) s += ` #${best.cid}`;
+    if(best.c==='TreasureBox'||best.c.startsWith('MiniGame')) s += `<br><span class="${done?'done':'todo'}">${done?'✓ collected':'○ not collected'}</span>`;
+    tip.innerHTML=s; tip.style.display='block';
+    tip.style.left=Math.min(sx+12, innerWidth-230)+'px'; tip.style.top=(sy+12)+'px';
+    clearTimeout(tip._t); tip._t=setTimeout(()=>tip.style.display='none', 2600);
+  } else tip.style.display='none';
+}
+// ---- panel ----
+function buildPanel(){
+  const counts={}; for(const m of markers){ counts[m.c]=(counts[m.c]||0)+1; }
+  const order=['TreasureBox','MiniGameFly','MiniGameMole','MiniGameWave','Puzzle','FieldStatuePickup','Gather','Mining'];
+  const seen=new Set(); const cont=document.getElementById('cats'); cont.innerHTML='';
+  for(const c of order.concat(Object.keys(counts))){ if(!counts[c]||seen.has(c))continue; seen.add(c);
+    enabled[c]=enabled[c]??(c!=='Gather'&&c!=='Mining');
+    const row=document.createElement('label'); row.className='row';
+    row.innerHTML=`<input type="checkbox" ${enabled[c]?'checked':''}><span class="dot" style="background:${CAT_COLORS[c]}"></span><span class="lbl">${CAT_LABELS[c]||c}</span><span class="ct">${counts[c]}</span>`;
+    row.querySelector('input').addEventListener('change',ev=>{enabled[c]=ev.target.checked; draw();});
+    cont.appendChild(row);
+  }
+  updateStats();
+}
+function updateStats(){
+  const totC=markers.filter(m=>m.c==='TreasureBox').length;
+  const doneC=markers.filter(m=>m.c==='TreasureBox'&&isDone(m)).length;
+  const totM=markers.filter(m=>m.c.startsWith('MiniGame')).length;
+  const doneM=markers.filter(m=>m.c.startsWith('MiniGame')&&isDone(m)).length;
+  document.getElementById('stats').innerHTML =
+    `Chests <b>${doneC}/${totC}</b> (${(100*doneC/totC).toFixed(0)}%)<br>Minigames <b>${doneM}/${totM}</b> (${(100*doneM/totM).toFixed(0)}%)`;
+}
+document.getElementById('hideDone').addEventListener('change',e=>{hideDone=e.target.checked; draw();});
+document.getElementById('collapse').addEventListener('click',()=>{ const p=document.getElementById('panel'); p.classList.toggle('toggle-collapsed'); document.getElementById('collapse').textContent=p.classList.contains('toggle-collapsed')?'+':'–'; });
+// ---- load ----
+async function loadProgress(){
+  try{
+    const r=await fetch('progress.json?_='+Date.now());
+    if(!r.ok) throw 0; const p=await r.json();
+    progress.opened=new Set(p.openedTreasureBoxCIDs||[]); progress.mg=new Set(p.completedMinigameCIDs||[]);
+    document.getElementById('freshness').textContent = p.updated ? ('save synced '+p.updated) : 'save data loaded';
+  }catch(e){ document.getElementById('freshness').textContent='no progress file yet — showing all markers'; }
+}
+async function boot(){
+  const mk=await (await fetch('markers.json')).json(); markers=mk.markers;
+  await loadProgress();
+  img.onload=()=>{ fitView(); buildPanel(); draw(); };
+  img.src='map.jpeg';
+  addEventListener('resize',resize); resize();
+  // refresh progress every 5 min in case the sync job pushed new data while the tab is open
+  setInterval(async()=>{ await loadProgress(); updateStats(); draw(); }, 300000);
+}
+boot();
+</script>
+</body>
+</html>
